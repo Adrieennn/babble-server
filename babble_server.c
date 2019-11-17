@@ -114,6 +114,8 @@ static int process_command(command_t *cmd, answer_t **answer) {
   return res;
 }
 
+void *exec_routine(void *args) { return NULL; }
+
 void *comm_routine(void *args) {
   int sockfd = *((int *)args);
   char client_name[BABBLE_ID_SIZE + 1];
@@ -211,7 +213,7 @@ int main(int argc, char *argv[]) {
   int sockfd, newsockfd[BABBLE_ANSWER_THREADS];
   int portno = BABBLE_PORT;
 
-  int opt;
+  int opt, i;
   int nb_args = 1;
 
   pthread_t clients[BABBLE_ANSWER_THREADS];
@@ -241,6 +243,10 @@ int main(int argc, char *argv[]) {
 
   if ((sockfd = server_connection_init(portno)) == -1) {
     return -1;
+  }
+
+  for (i = 0; i < BABBLE_EXECUTOR_THREADS; i++) {
+    pthread_create(&execs[logged_in], NULL, exec_routine, NULL);
   }
 
   printf("Babble server bound to port %d\n", portno);
