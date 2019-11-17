@@ -203,8 +203,6 @@ void *comm_routine(void *args) {
     free(cmd);
   }
   close(sockfd);
-
-  printf("socket: %d\n", sockfd);
   return NULL;
 }
 
