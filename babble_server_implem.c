@@ -160,6 +160,7 @@ int server_connection_accept(int sock) {
   socklen_t clilen = sizeof(cli_addr);
 
   new_sock = accept(sock, (struct sockaddr *)&cli_addr, &clilen);
+  printf("accept\n");
 
   if (new_sock < 0) {
     perror("ERROR on accept");

@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +114,100 @@ static int process_command(command_t *cmd, answer_t **answer) {
   return res;
 }
 
+void *comm_routine(void *args) {
+  int sockfd = *((int *)args);
+  char client_name[BABBLE_ID_SIZE + 1];
+  char *recv_buff = NULL;
+  int recv_size = 0;
+  command_t *cmd;
+  answer_t *answer = NULL;
+  unsigned long client_key = 0;
+
+  memset(client_name, 0, BABBLE_ID_SIZE + 1);
+  if ((recv_size = network_recv(sockfd, (void **)&recv_buff)) < 0) {
+    fprintf(stderr, "Error -- recv from client\n");
+    close(sockfd);
+  }
+
+  cmd = new_command(0);
+
+  if (parse_command(recv_buff, cmd) == -1 || cmd->cid != LOGIN) {
+    fprintf(stderr, "Error -- in LOGIN message\n");
+    close(sockfd);
+    free(cmd);
+  }
+
+  /* before processing the command, we should register the
+   * socket associated with the new client; this is to be done only
+   * for the LOGIN command */
+  cmd->sock = sockfd;
+
+  if (process_command(cmd, &answer) == -1) {
+    fprintf(stderr, "Error -- in LOGIN\n");
+    close(sockfd);
+    free(cmd);
+  }
+
+  /* notify client of registration */
+  if (send_answer_to_client(answer) == -1) {
+    fprintf(stderr, "Error -- in LOGIN ack\n");
+    close(sockfd);
+    free(cmd);
+    free_answer(answer);
+  } else {
+    free_answer(answer);
+  }
+
+  /* let's store the key locally */
+  client_key = cmd->key;
+
+  strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
+  free(recv_buff);
+  free(cmd);
+
+  /* looping on client commands */
+  while ((recv_size = network_recv(sockfd, (void **)&recv_buff)) > 0) {
+    cmd = new_command(client_key);
+    if (parse_command(recv_buff, cmd) == -1) {
+      fprintf(stderr, "Warning: unable to parse message from client %s\n",
+              client_name);
+      notify_parse_error(cmd, recv_buff, &answer);
+      send_answer_to_client(answer);
+      free_answer(answer);
+      free(cmd);
+    } else {
+      if (process_command(cmd, &answer) == -1) {
+        fprintf(stderr, "Warning: unable to process command from client %lu\n",
+                cmd->key);
+      }
+      free(cmd);
+
+      if (send_answer_to_client(answer) == -1) {
+        fprintf(stderr, "Warning: unable to answer command from client %lu\n",
+                answer->key);
+      }
+      free_answer(answer);
+    }
+    free(recv_buff);
+  }
+
+  /* UNREGISTERING client */
+  if (client_name[0] != 0) {
+    cmd = new_command(client_key);
+    cmd->cid = UNREGISTER;
+
+    if (unregisted_client(cmd)) {
+      fprintf(stderr, "Warning -- failed to unregister client %s\n",
+              client_name);
+    }
+    free(cmd);
+  }
+  close(sockfd);
+
+  printf("socket: %d\n", sockfd);
+  return NULL;
+}
+
 int main(int argc, char *argv[]) {
   int sockfd, newsockfd;
   int portno = BABBLE_PORT;
@@ -120,14 +215,9 @@ int main(int argc, char *argv[]) {
   int opt;
   int nb_args = 1;
 
-  char *recv_buff = NULL;
-  int recv_size = 0;
-
-  unsigned long client_key = 0;
-  char client_name[BABBLE_ID_SIZE + 1];
-
-  command_t *cmd;
-  answer_t *answer = NULL;
+  pthread_t clients[MAX_CLIENT];
+  pthread_t execs[1];
+  unsigned int logged_in = 0;
 
   while ((opt = getopt(argc, argv, "+hp:")) != -1) {
     switch (opt) {
@@ -161,91 +251,8 @@ int main(int argc, char *argv[]) {
     if ((newsockfd = server_connection_accept(sockfd)) == -1) {
       return -1;
     }
-
-    memset(client_name, 0, BABBLE_ID_SIZE + 1);
-    if ((recv_size = network_recv(newsockfd, (void **)&recv_buff)) < 0) {
-      fprintf(stderr, "Error -- recv from client\n");
-      close(newsockfd);
-      continue;
-    }
-
-    cmd = new_command(0);
-
-    if (parse_command(recv_buff, cmd) == -1 || cmd->cid != LOGIN) {
-      fprintf(stderr, "Error -- in LOGIN message\n");
-      close(newsockfd);
-      free(cmd);
-      continue;
-    }
-
-    /* before processing the command, we should register the
-     * socket associated with the new client; this is to be done only
-     * for the LOGIN command */
-    cmd->sock = newsockfd;
-
-    if (process_command(cmd, &answer) == -1) {
-      fprintf(stderr, "Error -- in LOGIN\n");
-      close(newsockfd);
-      free(cmd);
-      continue;
-    }
-
-    /* notify client of registration */
-    if (send_answer_to_client(answer) == -1) {
-      fprintf(stderr, "Error -- in LOGIN ack\n");
-      close(newsockfd);
-      free(cmd);
-      free_answer(answer);
-      continue;
-    } else {
-      free_answer(answer);
-    }
-
-    /* let's store the key locally */
-    client_key = cmd->key;
-
-    strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
-    free(recv_buff);
-    free(cmd);
-
-    /* looping on client commands */
-    while ((recv_size = network_recv(newsockfd, (void **)&recv_buff)) > 0) {
-      cmd = new_command(client_key);
-      if (parse_command(recv_buff, cmd) == -1) {
-        fprintf(stderr, "Warning: unable to parse message from client %s\n",
-                client_name);
-        notify_parse_error(cmd, recv_buff, &answer);
-        send_answer_to_client(answer);
-        free_answer(answer);
-        free(cmd);
-      } else {
-        if (process_command(cmd, &answer) == -1) {
-          fprintf(stderr,
-                  "Warning: unable to process command from client %lu\n",
-                  cmd->key);
-        }
-        free(cmd);
-
-        if (send_answer_to_client(answer) == -1) {
-          fprintf(stderr, "Warning: unable to answer command from client %lu\n",
-                  answer->key);
-        }
-        free_answer(answer);
-      }
-      free(recv_buff);
-    }
-
-    if (client_name[0] != 0) {
-      cmd = new_command(client_key);
-      cmd->cid = UNREGISTER;
-
-      if (unregisted_client(cmd)) {
-        fprintf(stderr, "Warning -- failed to unregister client %s\n",
-                client_name);
-      }
-      free(cmd);
-    }
+    pthread_create(&clients[logged_in], NULL, comm_routine, &newsockfd);
+    logged_in++;
   }
-  close(sockfd);
   return 0;
 }
