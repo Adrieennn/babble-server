@@ -123,6 +123,7 @@ void *comm_routine(void *args) {
   answer_t *answer = NULL;
   unsigned long client_key = 0;
 
+  printf("socket: %d\n", sockfd);
   memset(client_name, 0, BABBLE_ID_SIZE + 1);
   if ((recv_size = network_recv(sockfd, (void **)&recv_buff)) < 0) {
     fprintf(stderr, "Error -- recv from client\n");
@@ -207,14 +208,14 @@ void *comm_routine(void *args) {
 }
 
 int main(int argc, char *argv[]) {
-  int sockfd, newsockfd;
+  int sockfd, newsockfd[BABBLE_ANSWER_THREADS];
   int portno = BABBLE_PORT;
 
   int opt;
   int nb_args = 1;
 
-  pthread_t clients[MAX_CLIENT];
-  pthread_t execs[1];
+  pthread_t clients[BABBLE_ANSWER_THREADS];
+  pthread_t execs[BABBLE_EXECUTOR_THREADS];
   unsigned int logged_in = 0;
 
   while ((opt = getopt(argc, argv, "+hp:")) != -1) {
@@ -246,10 +247,11 @@ int main(int argc, char *argv[]) {
 
   /* main server loop */
   while (1) {
-    if ((newsockfd = server_connection_accept(sockfd)) == -1) {
+    if ((newsockfd[logged_in] = server_connection_accept(sockfd)) == -1) {
       return -1;
     }
-    pthread_create(&clients[logged_in], NULL, comm_routine, &newsockfd);
+    pthread_create(&clients[logged_in], NULL, comm_routine,
+                   &newsockfd[logged_in]);
     logged_in++;
   }
   return 0;
