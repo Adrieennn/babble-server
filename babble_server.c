@@ -19,46 +19,47 @@
 #include "babble_types.h"
 #include "babble_utils.h"
 
-#define BUFFER_SIZE 16
-
-sem_t full_count, empty_count, l_lock;
+sem_t full_count, empty_count, cmd_lock;
 command_t **cmd_buffer;
 int buffer_in, buffer_out;
 
 void buffer_init() {
   buffer_in = 0;
   buffer_out = 0;
-  cmd_buffer = malloc(BUFFER_SIZE * sizeof(command_t *));
+  cmd_buffer = malloc(BABBLE_BUFFER_SIZE * sizeof(command_t *));
+
   if (sem_init(&full_count, 0, 0) != 0) {
     perror("sem_init full_count");
     exit(-1);
   }
-  if (sem_init(&empty_count, 0, BUFFER_SIZE) != 0) {
+
+  if (sem_init(&empty_count, 0, BABBLE_BUFFER_SIZE) != 0) {
     perror("sem_init empty_count");
     exit(-1);
   }
-  if (sem_init(&l_lock, 0, 1) != 0) {
+
+  if (sem_init(&cmd_lock, 0, 1) != 0) {
     perror("sem_init l_lock");
     exit(-1);
   }
 }
 
-void add_to_buffer(command_t *cmd) {
+void write_to_buffer(command_t *cmd) {
   sem_wait(&empty_count);
-  sem_wait(&l_lock);
+  sem_wait(&cmd_lock);
   cmd_buffer[buffer_in] = cmd;
-  buffer_in = (buffer_in + 1) % BUFFER_SIZE;
-  sem_post(&l_lock);
+  buffer_in = (buffer_in + 1) % BABBLE_BUFFER_SIZE;
+  sem_post(&cmd_lock);
   sem_post(&full_count);
 }
 
 command_t *read_from_buffer() {
-  sem_wait(&empty_count);
-  sem_wait(&l_lock);
+  sem_wait(&full_count);
+  sem_wait(&cmd_lock);
   command_t *res = cmd_buffer[buffer_out];
-  buffer_out = (buffer_out + 1) % BUFFER_SIZE;
-  sem_post(&l_lock);
-  sem_post(&full_count);
+  buffer_out = (buffer_out + 1) % BABBLE_BUFFER_SIZE;
+  sem_post(&cmd_lock);
+  sem_post(&empty_count);
   return res;
 }
 
@@ -66,9 +67,10 @@ static void display_help(char *exec) {
   printf("Usage: %s -p port_number\n", exec);
 }
 
-static int parse_command(char *str, command_t *cmd) {
+static void parse_command(char *str, command_t *cmd) {
   char *name = NULL;
 
+  strncpy(cmd->recv_buf, str, BABBLE_BUFFER_SIZE);
   /* start by cleaning the input */
   str_clean(str);
 
@@ -81,7 +83,8 @@ static int parse_command(char *str, command_t *cmd) {
         name = get_name_from_key(cmd->key);
         fprintf(stderr, "Error from [%s]-- invalid LOGIN -> %s\n", name, str);
         free(name);
-        return -1;
+        cmd->return_status = -1;
+        return;
       }
       break;
     case PUBLISH:
@@ -90,7 +93,8 @@ static int parse_command(char *str, command_t *cmd) {
         fprintf(stderr, "Warning from [%s]-- invalid PUBLISH -> %s\n", name,
                 str);
         free(name);
-        return -1;
+        cmd->return_status = -1;
+        return;
       }
       break;
     case FOLLOW:
@@ -99,7 +103,8 @@ static int parse_command(char *str, command_t *cmd) {
         fprintf(stderr, "Warning from [%s]-- invalid FOLLOW -> %s\n", name,
                 str);
         free(name);
-        return -1;
+        cmd->return_status = -1;
+        return;
       }
       break;
     case TIMELINE:
@@ -116,10 +121,12 @@ static int parse_command(char *str, command_t *cmd) {
       fprintf(stderr, "Error from [%s]-- invalid client command -> %s\n", name,
               str);
       free(name);
-      return -1;
+      cmd->return_status = -1;
+      return;
   }
 
-  return 0;
+  cmd->return_status = 0;
+  return;
 }
 
 /* processes the command and eventually generates an answer */
@@ -158,11 +165,43 @@ static int process_command(command_t *cmd, answer_t **answer) {
   return res;
 }
 
-void *exec_routine(void *args) { return NULL; }
+void *exec_routine(void *args) {
+  /* execution threads */
+  command_t *cmd;
+  answer_t *answer = NULL;
+  char client_name[BABBLE_ID_SIZE + 1];
+
+  while (1) {
+    /* get the command from the command buffer*/
+    cmd = read_from_buffer();
+    if (cmd->return_status == -1) {
+      strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
+      fprintf(stderr, "Warning: unable to parse message from client %s\n",
+              client_name);
+      notify_parse_error(cmd, cmd->recv_buf, &answer);
+      send_answer_to_client(answer);
+      free_answer(answer);
+      free(cmd);
+    } else {
+      /* process it */
+      if (process_command(cmd, &answer) == -1) {
+        fprintf(stderr, "Warning: unable to process command from client %lu\n",
+                cmd->key);
+      }
+      free(cmd);
+
+      /* send answer*/
+      if (send_answer_to_client(answer) == -1) {
+        fprintf(stderr, "Warning: unable to answer command from client %lu\n",
+                answer->key);
+      }
+      free_answer(answer);
+    }
+  }
+  return NULL;
+}
 
 void *comm_routine(void *args) {
-  // Shouldn't this be inside the main thread?
-  // registering client plus sending back the login acknowledgement
   int sockfd = *((int *)args);
   char client_name[BABBLE_ID_SIZE + 1];
   char *recv_buff = NULL;
@@ -171,7 +210,6 @@ void *comm_routine(void *args) {
   answer_t *answer = NULL;
   unsigned long client_key = 0;
 
-  printf("socket: %d\n", sockfd);
   memset(client_name, 0, BABBLE_ID_SIZE + 1);
   if ((recv_size = network_recv(sockfd, (void **)&recv_buff)) < 0) {
     fprintf(stderr, "Error -- recv from client\n");
@@ -180,7 +218,8 @@ void *comm_routine(void *args) {
 
   cmd = new_command(0);
 
-  if (parse_command(recv_buff, cmd) == -1 || cmd->cid != LOGIN) {
+  parse_command(recv_buff, cmd);
+  if (cmd->return_status == -1 || cmd->cid != LOGIN) {
     fprintf(stderr, "Error -- in LOGIN message\n");
     close(sockfd);
     free(cmd);
@@ -217,26 +256,9 @@ void *comm_routine(void *args) {
   /* looping on client commands */
   while ((recv_size = network_recv(sockfd, (void **)&recv_buff)) > 0) {
     cmd = new_command(client_key);
-    if (parse_command(recv_buff, cmd) == -1) {
-      fprintf(stderr, "Warning: unable to parse message from client %s\n",
-              client_name);
-      notify_parse_error(cmd, recv_buff, &answer);
-      send_answer_to_client(answer);
-      free_answer(answer);
-      free(cmd);
-    } else {
-      if (process_command(cmd, &answer) == -1) {
-        fprintf(stderr, "Warning: unable to process command from client %lu\n",
-                cmd->key);
-      }
-      free(cmd);
+    parse_command(recv_buff, cmd);
 
-      if (send_answer_to_client(answer) == -1) {
-        fprintf(stderr, "Warning: unable to answer command from client %lu\n",
-                answer->key);
-      }
-      free_answer(answer);
-    }
+    write_to_buffer(cmd);
     free(recv_buff);
   }
 
@@ -285,6 +307,8 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  /* command buffer initialization */
+  buffer_init();
   server_data_init();
 
   if ((sockfd = server_connection_init(portno)) == -1) {
