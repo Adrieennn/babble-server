@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,47 +23,44 @@
 
 sem_t full_count, empty_count, l_lock;
 command_t **cmd_buffer;
-int buffer_count;
+int buffer_in, buffer_out;
 
-
-int buffer init(){
-    buffer_count = 0;
-    cmd_buffer=malloc(BUFFER_SIZE* sizeof(*command_t));
-    if (sem_init(&full_count, 0, 0) != 0) {
-        perror("sem_init full_count");
-        exit(-1);
-    }
-    if (sem_init(&empty_count, 0, BUFFER_SIZE) != 0) {
-        perror("sem_init empty_count");
-        exit(-1);
-    }
-    if (sem_init(&l_lock, 0, 1) != 0) {
-        perror("sem_init l_lock");
-        exit(-1);
-    }
+void buffer_init() {
+  buffer_in = 0;
+  buffer_out = 0;
+  cmd_buffer = malloc(BUFFER_SIZE * sizeof(command_t *));
+  if (sem_init(&full_count, 0, 0) != 0) {
+    perror("sem_init full_count");
+    exit(-1);
+  }
+  if (sem_init(&empty_count, 0, BUFFER_SIZE) != 0) {
+    perror("sem_init empty_count");
+    exit(-1);
+  }
+  if (sem_init(&l_lock, 0, 1) != 0) {
+    perror("sem_init l_lock");
+    exit(-1);
+  }
 }
 
-
-int add_to_buffer(command_t *cmd){
-    sem_wait(empty_count);
-    sem_wait(l_lock);
-    cmd_buffer[buffer_count]=cmd;
-    buffer_count++;
-    sem_post(l_lock);
-    sem_post(full_count);
+void add_to_buffer(command_t *cmd) {
+  sem_wait(&empty_count);
+  sem_wait(&l_lock);
+  cmd_buffer[buffer_in] = cmd;
+  buffer_in = (buffer_in + 1) % BUFFER_SIZE;
+  sem_post(&l_lock);
+  sem_post(&full_count);
 }
 
-*command_t write_to_buffer(char *str){
-    sem_wait(empty_count);
-    sem_wait(l_lock);
-    *command_t res = cmd_buffer[buffer_count];
-    buffer_count--;
-    sem_post(l_lock);
-    sem_post(full_count);
+command_t *read_from_buffer() {
+  sem_wait(&empty_count);
+  sem_wait(&l_lock);
+  command_t *res = cmd_buffer[buffer_out];
+  buffer_out = (buffer_out + 1) % BUFFER_SIZE;
+  sem_post(&l_lock);
+  sem_post(&full_count);
+  return res;
 }
-
-
-
 
 static void display_help(char *exec) {
   printf("Usage: %s -p port_number\n", exec);
@@ -163,9 +161,8 @@ static int process_command(command_t *cmd, answer_t **answer) {
 void *exec_routine(void *args) { return NULL; }
 
 void *comm_routine(void *args) {
-
-    //Shouldn't this be inside the main thread?
-    //registering client plus sending back the login acknowledgement
+  // Shouldn't this be inside the main thread?
+  // registering client plus sending back the login acknowledgement
   int sockfd = *((int *)args);
   char client_name[BABBLE_ID_SIZE + 1];
   char *recv_buff = NULL;
