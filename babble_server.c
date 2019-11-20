@@ -26,14 +26,14 @@ int buffer_in, buffer_out;
 void buffer_init() {
   buffer_in = 0;
   buffer_out = 0;
-  cmd_buffer = malloc(BABBLE_BUFFER_SIZE * sizeof(command_t *));
+  cmd_buffer = malloc(BABBLE_PRODCONS_SIZE * sizeof(command_t *));
 
   if (sem_init(&full_count, 0, 0) != 0) {
     perror("sem_init full_count");
     exit(-1);
   }
 
-  if (sem_init(&empty_count, 0, BABBLE_BUFFER_SIZE) != 0) {
+  if (sem_init(&empty_count, 0, BABBLE_PRODCONS_SIZE) != 0) {
     perror("sem_init empty_count");
     exit(-1);
   }
@@ -48,7 +48,7 @@ void write_to_buffer(command_t *cmd) {
   sem_wait(&empty_count);
   sem_wait(&cmd_lock);
   cmd_buffer[buffer_in] = cmd;
-  buffer_in = (buffer_in + 1) % BABBLE_BUFFER_SIZE;
+  buffer_in = (buffer_in + 1) % BABBLE_PRODCONS_SIZE;
   sem_post(&cmd_lock);
   sem_post(&full_count);
 }
@@ -57,7 +57,7 @@ command_t *read_from_buffer() {
   sem_wait(&full_count);
   sem_wait(&cmd_lock);
   command_t *res = cmd_buffer[buffer_out];
-  buffer_out = (buffer_out + 1) % BABBLE_BUFFER_SIZE;
+  buffer_out = (buffer_out + 1) % BABBLE_PRODCONS_SIZE;
   sem_post(&cmd_lock);
   sem_post(&empty_count);
   return res;
