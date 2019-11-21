@@ -27,6 +27,7 @@ int buffer_in, buffer_out;
 /* preventing DoS */
 int shared_fd;
 sem_t fd_to_pass, fd_passed;
+sem_t process_lock;
 
 void buffer_init() {
   buffer_in = 0;
@@ -175,6 +176,7 @@ void *exec_routine(void *args) {
   command_t *cmd;
   answer_t *answer = NULL;
   char client_name[BABBLE_ID_SIZE + 1];
+  int ps_status;
 
   while (1) {
     /* get the command from the command buffer*/
@@ -189,7 +191,10 @@ void *exec_routine(void *args) {
       free(cmd);
     } else {
       /* process it */
-      if (process_command(cmd, &answer) == -1) {
+      sem_wait(&cmd_lock);
+      ps_status = process_command(cmd, &answer);
+      sem_post(&cmd_lock);
+      if (ps_status == -1) {
         fprintf(stderr, "Warning: unable to process command from client %lu\n",
                 cmd->key);
       }
@@ -326,13 +331,21 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  /* initialized at locked state */
   if (sem_init(&fd_to_pass, 0, 0) != 0) {
     perror("sem_init fd_lock");
     exit(-1);
   }
 
+  /* initialized at locked state */
   if (sem_init(&fd_passed, 0, 0) != 0) {
     perror("sem_init fd_lock");
+    exit(-1);
+  }
+
+  /* initialized as a lock */
+  if (sem_init(&cmd_lock, 0, 1) != 0) {
+    perror("sem_init cmd_lock");
     exit(-1);
   }
 
