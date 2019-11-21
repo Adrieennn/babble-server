@@ -21,7 +21,7 @@
 
 /* command buffer variables */
 sem_t full_count, empty_count, cmd_lock;
-command_t **cmd_buffer;
+command_t *cmd_buffer[BABBLE_PRODCONS_SIZE];
 int buffer_in, buffer_out;
 
 /* preventing DoS */
@@ -32,7 +32,6 @@ sem_t process_lock;
 void buffer_init() {
   buffer_in = 0;
   buffer_out = 0;
-  cmd_buffer = malloc(BABBLE_PRODCONS_SIZE * sizeof(command_t *));
 
   if (sem_init(&full_count, 0, 0) != 0) {
     perror("sem_init full_count");
@@ -60,9 +59,10 @@ void write_to_buffer(command_t *cmd) {
 }
 
 command_t *read_from_buffer() {
+  command_t *res;;
   sem_wait(&full_count);
   sem_wait(&cmd_lock);
-  command_t *res = cmd_buffer[buffer_out];
+  res = cmd_buffer[buffer_out];
   buffer_out = (buffer_out + 1) % BABBLE_PRODCONS_SIZE;
   sem_post(&cmd_lock);
   sem_post(&empty_count);
@@ -344,7 +344,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* initialized as a lock */
-  if (sem_init(&cmd_lock, 0, 1) != 0) {
+  if (sem_init(&process_lock, 0, 1) != 0) {
     perror("sem_init cmd_lock");
     exit(-1);
   }
