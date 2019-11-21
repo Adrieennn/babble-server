@@ -190,10 +190,11 @@ void *exec_routine(void *args) {
       free_answer(answer);
       free(cmd);
     } else {
-      /* process it */
+      /* process it critically */
       sem_wait(&cmd_lock);
       ps_status = process_command(cmd, &answer);
       sem_post(&cmd_lock);
+
       if (ps_status == -1) {
         fprintf(stderr, "Warning: unable to process command from client %lu\n",
                 cmd->key);
@@ -302,7 +303,6 @@ int main(int argc, char *argv[]) {
 
   pthread_t clients[BABBLE_ANSWER_THREADS];
   pthread_t execs[BABBLE_EXECUTOR_THREADS];
-  unsigned int logged_in = 0;
 
   while ((opt = getopt(argc, argv, "+hp:")) != -1) {
     switch (opt) {
@@ -350,11 +350,11 @@ int main(int argc, char *argv[]) {
   }
 
   for (i = 0; i < BABBLE_EXECUTOR_THREADS; i++) {
-    pthread_create(&execs[logged_in], NULL, exec_routine, NULL);
+    pthread_create(&execs[i], NULL, exec_routine, NULL);
   }
 
   for (i = 0; i < BABBLE_ANSWER_THREADS; i++) {
-    pthread_create(&clients[logged_in], NULL, comm_routine, NULL);
+    pthread_create(&clients[i], NULL, comm_routine, NULL);
   }
 
   printf("Babble server bound to port %d\n", portno);
