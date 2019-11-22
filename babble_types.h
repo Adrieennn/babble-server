@@ -1,6 +1,7 @@
 #ifndef __BABBLE_TYPES_H__
 #define __BABBLE_TYPES_H__
 
+#include <semaphore.h>
 #include <time.h>
 
 #include "babble_config.h"
@@ -24,7 +25,7 @@ typedef struct command {
   char msg[BABBLE_SIZE];
   char recv_buf[BABBLE_BUFFER_SIZE];
   int answer_expected; /* answer sent only if set */
-  int return_status; /* return status of parse_command */
+  int return_status;   /* return status of parse_command */
 } command_t;
 
 typedef struct client_bundle {
@@ -42,7 +43,6 @@ typedef struct client_bundle {
   uint64_t last_timeline; /* stored to display only *new* messages */
   int nb_followers;
   unsigned int disconnected; /* set to 1 when client has disconnected */
-
 } client_bundle_t;
 
 #endif

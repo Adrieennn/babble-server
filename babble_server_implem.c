@@ -23,6 +23,8 @@ typedef struct timeline_item {
   struct timeline_item *next;
 } timeline_item_t;
 
+sem_t f_global;
+
 /* freeing client_bundle_t struct */
 static void free_client_data(client_bundle_t *client) {
   if (client == NULL) {
@@ -109,6 +111,11 @@ void server_data_init(void) {
   server_start = time(NULL);
 
   registration_init();
+
+  if (sem_init(&f_global, 0, 1) != 0) {
+    perror("sem_init client_data->f_second");
+    exit(-1);
+  }
 }
 
 /* open a socket to receive client connections */
@@ -290,6 +297,7 @@ int run_follow_command(command_t *cmd, answer_t **answer) {
   /* if client is not already followed, add it */
   int i = 0;
 
+  sem_wait(&f_global);
   for (i = 0; i < client->nb_followed; i++) {
     if (client->followed[i]->key == f_key) {
       break;
@@ -304,6 +312,7 @@ int run_follow_command(command_t *cmd, answer_t **answer) {
     printf("Warning: %s already follows %s\n", client->client_name,
            f_client->client_name);
   }
+  sem_post(&f_global);
 
   /* generate answer to client */
   if (cmd->answer_expected) {

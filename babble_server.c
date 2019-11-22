@@ -27,7 +27,6 @@ int buffer_in, buffer_out;
 /* preventing DoS */
 int shared_fd;
 sem_t fd_to_pass, fd_passed;
-sem_t process_lock;
 
 void buffer_init() {
   buffer_in = 0;
@@ -191,9 +190,7 @@ void *exec_routine(void *args) {
       free(cmd);
     } else {
       /* process it critically */
-      sem_wait(&cmd_lock);
       ps_status = process_command(cmd, &answer);
-      sem_post(&cmd_lock);
 
       if (ps_status == -1) {
         fprintf(stderr, "Warning: unable to process command from client %lu\n",
@@ -340,12 +337,6 @@ int main(int argc, char *argv[]) {
   /* initialized at locked state */
   if (sem_init(&fd_passed, 0, 0) != 0) {
     perror("sem_init fd_lock");
-    exit(-1);
-  }
-
-  /* initialized as a lock */
-  if (sem_init(&process_lock, 0, 1) != 0) {
-    perror("sem_init cmd_lock");
     exit(-1);
   }
 
