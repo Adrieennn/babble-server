@@ -58,7 +58,8 @@ void write_to_buffer(command_t *cmd) {
 }
 
 command_t *read_from_buffer() {
-  command_t *res;;
+  command_t *res;
+  ;
   sem_wait(&full_count);
   sem_wait(&cmd_lock);
   res = cmd_buffer[buffer_out];
@@ -170,123 +171,133 @@ static int process_command(command_t *cmd, answer_t **answer) {
   return res;
 }
 
-void *exec_routine(void *args) {
-  /* execution threads */
+void *exec_fnc(void *args) {
   command_t *cmd;
   answer_t *answer = NULL;
   char client_name[BABBLE_ID_SIZE + 1];
   int ps_status;
 
-  while (1) {
-    /* get the command from the command buffer*/
-    cmd = read_from_buffer();
-    if (cmd->return_status == -1) {
-      strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
-      fprintf(stderr, "Warning: unable to parse message from client %s\n",
-              client_name);
-      notify_parse_error(cmd, cmd->recv_buf, &answer);
-      send_answer_to_client(answer);
-      free_answer(answer);
-      free(cmd);
-    } else {
-      /* process it critically */
-      ps_status = process_command(cmd, &answer);
+  /* get the command from the command buffer*/
+  cmd = read_from_buffer();
+  if (cmd->return_status == -1) {
+    strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
+    fprintf(stderr, "Warning: unable to parse message from client %s\n",
+            client_name);
+    notify_parse_error(cmd, cmd->recv_buf, &answer);
+    send_answer_to_client(answer);
+    free_answer(answer);
+    free(cmd);
+  } else {
+    /* process it critically */
+    ps_status = process_command(cmd, &answer);
 
-      if (ps_status == -1) {
-        fprintf(stderr, "Warning: unable to process command from client %lu\n",
-                cmd->key);
-      }
-      free(cmd);
-
-      /* send answer*/
-      if (send_answer_to_client(answer) == -1) {
-        fprintf(stderr, "Warning: unable to answer command from client %lu\n",
-                answer->key);
-      }
-      free_answer(answer);
+    if (ps_status == -1) {
+      fprintf(stderr, "Warning: unable to process command from client %lu\n",
+              cmd->key);
     }
+    free(cmd);
+
+    /* send answer*/
+    if (send_answer_to_client(answer) == -1) {
+      fprintf(stderr, "Warning: unable to answer command from client %lu\n",
+              answer->key);
+    }
+    free_answer(answer);
+  }
+  return NULL;
+}
+
+void *comm_fnc() {
+  sem_wait(&fd_to_pass);
+  int sockfd = shared_fd;
+  sem_post(&fd_passed);
+
+  char client_name[BABBLE_ID_SIZE + 1];
+  char *recv_buff = NULL;
+  int recv_size = 0;
+  command_t *cmd;
+  answer_t *answer = NULL;
+  unsigned long client_key = 0;
+
+  memset(client_name, 0, BABBLE_ID_SIZE + 1);
+  if ((recv_size = network_recv(sockfd, (void **)&recv_buff)) < 0) {
+    fprintf(stderr, "Error -- recv from client\n");
+    close(sockfd);
+  }
+
+  cmd = new_command(0);
+
+  parse_command(recv_buff, cmd);
+  if (cmd->return_status == -1 || cmd->cid != LOGIN) {
+    fprintf(stderr, "Error -- in LOGIN message\n");
+    close(sockfd);
+    free(cmd);
+  }
+
+  /* before processing the command, we should register the
+   * socket associated with the new client; this is to be done only
+   * for the LOGIN command */
+  cmd->sock = sockfd;
+
+  if (process_command(cmd, &answer) == -1) {
+    fprintf(stderr, "Error -- in LOGIN\n");
+    close(sockfd);
+    free(cmd);
+  }
+
+  /* notify client of registration */
+  if (send_answer_to_client(answer) == -1) {
+    fprintf(stderr, "Error -- in LOGIN ack\n");
+    close(sockfd);
+    free(cmd);
+    free_answer(answer);
+  } else {
+    free_answer(answer);
+  }
+
+  /* let's store the key locally */
+  client_key = cmd->key;
+
+  strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
+  free(recv_buff);
+  free(cmd);
+
+  /* looping on client commands */
+  while ((recv_size = network_recv(sockfd, (void **)&recv_buff)) > 0) {
+    cmd = new_command(client_key);
+    parse_command(recv_buff, cmd);
+
+    write_to_buffer(cmd);
+    free(recv_buff);
+  }
+
+  /* UNREGISTERING client */
+  if (client_name[0] != 0) {
+    cmd = new_command(client_key);
+    cmd->cid = UNREGISTER;
+
+    if (unregisted_client(cmd)) {
+      fprintf(stderr, "Warning -- failed to unregister client %s\n",
+              client_name);
+    }
+    free(cmd);
+  }
+  return NULL;
+}
+
+void *exec_routine(void *args) {
+  /* execution threads */
+  while (1) {
+    exec_fnc(args);
   }
   return NULL;
 }
 
 void *comm_routine(void *args) {
+  /* communication threads */
   (void)args;
-
   while (1) {
-    sem_wait(&fd_to_pass);
-    int sockfd = shared_fd;
-    sem_post(&fd_passed);
-
-    char client_name[BABBLE_ID_SIZE + 1];
-    char *recv_buff = NULL;
-    int recv_size = 0;
-    command_t *cmd;
-    answer_t *answer = NULL;
-    unsigned long client_key = 0;
-
-    memset(client_name, 0, BABBLE_ID_SIZE + 1);
-    if ((recv_size = network_recv(sockfd, (void **)&recv_buff)) < 0) {
-      fprintf(stderr, "Error -- recv from client\n");
-      close(sockfd);
-    }
-
-    cmd = new_command(0);
-
-    parse_command(recv_buff, cmd);
-    if (cmd->return_status == -1 || cmd->cid != LOGIN) {
-      fprintf(stderr, "Error -- in LOGIN message\n");
-      close(sockfd);
-      free(cmd);
-    }
-
-    /* before processing the command, we should register the
-     * socket associated with the new client; this is to be done only
-     * for the LOGIN command */
-    cmd->sock = sockfd;
-
-    if (process_command(cmd, &answer) == -1) {
-      fprintf(stderr, "Error -- in LOGIN\n");
-      close(sockfd);
-      free(cmd);
-    }
-
-    /* notify client of registration */
-    if (send_answer_to_client(answer) == -1) {
-      fprintf(stderr, "Error -- in LOGIN ack\n");
-      close(sockfd);
-      free(cmd);
-      free_answer(answer);
-    } else {
-      free_answer(answer);
-    }
-
-    /* let's store the key locally */
-    client_key = cmd->key;
-
-    strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
-    free(recv_buff);
-    free(cmd);
-
-    /* looping on client commands */
-    while ((recv_size = network_recv(sockfd, (void **)&recv_buff)) > 0) {
-      cmd = new_command(client_key);
-      parse_command(recv_buff, cmd);
-
-      write_to_buffer(cmd);
-      free(recv_buff);
-    }
-
-    /* UNREGISTERING client */
-    if (client_name[0] != 0) {
-      cmd = new_command(client_key);
-      cmd->cid = UNREGISTER;
-
-      if (unregisted_client(cmd)) {
-        fprintf(stderr, "Warning -- failed to unregister client %s\n",
-                client_name);
-      }
-      free(cmd);
-    }
+    comm_fnc();
   }
   return NULL;
 }
@@ -300,6 +311,7 @@ int main(int argc, char *argv[]) {
 
   pthread_t clients[BABBLE_ANSWER_THREADS];
   pthread_t execs[BABBLE_EXECUTOR_THREADS];
+  pthread_t hybrids[BABBLE_HYBRID_THREADS];
 
   while ((opt = getopt(argc, argv, "+hp:")) != -1) {
     switch (opt) {
