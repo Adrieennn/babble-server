@@ -28,6 +28,10 @@ int buffer_in, buffer_out;
 int shared_fd;
 sem_t fd_to_pass, fd_passed;
 
+/* hybrid threads */
+int buf_count = 0;
+sem_t hybrid_signal, fd_lock, buf_lock;
+
 void buffer_init() {
   buffer_in = 0;
   buffer_out = 0;
@@ -51,17 +55,25 @@ void buffer_init() {
 void write_to_buffer(command_t *cmd) {
   sem_wait(&empty_count);
   sem_wait(&cmd_lock);
+  buf_count += 1;
   cmd_buffer[buffer_in] = cmd;
   buffer_in = (buffer_in + 1) % BABBLE_PRODCONS_SIZE;
   sem_post(&cmd_lock);
   sem_post(&full_count);
 }
 
-command_t *read_from_buffer() {
+command_t *read_from_buffer(int t_type) {
   command_t *res;
-  ;
+  sem_wait(&cmd_lock);
+  if (t_type == 1 && buf_count == 0) {
+    sem_post(&cmd_lock);
+    return NULL;
+  }
+  sem_post(&cmd_lock);
+
   sem_wait(&full_count);
   sem_wait(&cmd_lock);
+  buf_count -= 1;
   res = cmd_buffer[buffer_out];
   buffer_out = (buffer_out + 1) % BABBLE_PRODCONS_SIZE;
   sem_post(&cmd_lock);
@@ -171,14 +183,17 @@ static int process_command(command_t *cmd, answer_t **answer) {
   return res;
 }
 
-void *exec_fnc(void *args) {
+void exec_fnc(int t_type) {
   command_t *cmd;
   answer_t *answer = NULL;
   char client_name[BABBLE_ID_SIZE + 1];
   int ps_status;
 
   /* get the command from the command buffer*/
-  cmd = read_from_buffer();
+  cmd = read_from_buffer(t_type);
+
+  if (t_type == 1 && cmd == NULL) return;
+
   if (cmd->return_status == -1) {
     strncpy(client_name, cmd->msg, BABBLE_ID_SIZE);
     fprintf(stderr, "Warning: unable to parse message from client %s\n",
@@ -204,12 +219,22 @@ void *exec_fnc(void *args) {
     }
     free_answer(answer);
   }
-  return NULL;
+  return;
 }
 
-void *comm_fnc() {
+void comm_fnc() {
+  int sockfd;
   sem_wait(&fd_to_pass);
-  int sockfd = shared_fd;
+  sem_wait(&fd_lock);
+
+  if (shared_fd != -1) {
+    sockfd = shared_fd;
+    shared_fd = -1;
+  } else {
+    return;
+  }
+
+  sem_post(&fd_lock);
   sem_post(&fd_passed);
 
   char client_name[BABBLE_ID_SIZE + 1];
@@ -268,6 +293,10 @@ void *comm_fnc() {
     parse_command(recv_buff, cmd);
 
     write_to_buffer(cmd);
+
+    /* signal hybrid threds something is happening */
+    sem_post(&hybrid_signal);
+
     free(recv_buff);
   }
 
@@ -282,13 +311,13 @@ void *comm_fnc() {
     }
     free(cmd);
   }
-  return NULL;
 }
 
 void *exec_routine(void *args) {
   /* execution threads */
+  (void)args;
   while (1) {
-    exec_fnc(args);
+    exec_fnc(0);
   }
   return NULL;
 }
@@ -300,6 +329,14 @@ void *comm_routine(void *args) {
     comm_fnc();
   }
   return NULL;
+}
+
+void *hybrid_routine(void *args) {
+  while (1) {
+    sem_wait(&hybrid_signal);
+    comm_fnc();
+    exec_fnc(1);
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -342,13 +379,29 @@ int main(int argc, char *argv[]) {
 
   /* initialized at locked state */
   if (sem_init(&fd_to_pass, 0, 0) != 0) {
-    perror("sem_init fd_lock");
+    perror("sem_init fd_to_pass");
     exit(-1);
   }
 
   /* initialized at locked state */
   if (sem_init(&fd_passed, 0, 0) != 0) {
+    perror("sem_init fd_passed");
+    exit(-1);
+  }
+
+  /* initialized at locked state */
+  if (sem_init(&hybrid_signal, 0, 0) != 0) {
+    perror("sem_init hybrid_signal");
+    exit(-1);
+  }
+
+  if (sem_init(&fd_lock, 0, 1) != 0) {
     perror("sem_init fd_lock");
+    exit(-1);
+  }
+
+  if (sem_init(&buf_lock, 0, 1) != 0) {
+    perror("sem_init buf_lock");
     exit(-1);
   }
 
@@ -359,6 +412,10 @@ int main(int argc, char *argv[]) {
   for (i = 0; i < BABBLE_ANSWER_THREADS; i++) {
     pthread_create(&clients[i], NULL, comm_routine, NULL);
   }
+  
+  for (i = 0; i < BABBLE_HYBRID_THREADS; i++) {
+    pthread_create(&hybrids[i], NULL, hybrid_routine, NULL);
+  }
 
   printf("Babble server bound to port %d\n", portno);
 
@@ -367,6 +424,8 @@ int main(int argc, char *argv[]) {
     if ((shared_fd = server_connection_accept(sockfd)) == -1) {
       return -1;
     }
+    /* signal hybrid threds something is happening */
+    sem_post(&hybrid_signal);
     /* passing the socket fd to a comm thread */
     sem_post(&fd_to_pass);
     /* waiting for comm thread to confirm reception */
