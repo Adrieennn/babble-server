@@ -30,7 +30,7 @@ sem_t fd_to_pass, fd_passed;
 
 /* hybrid threads */
 int buf_count = 0;
-sem_t hybrid_signal, fd_lock, buf_lock;
+sem_t hybrid_signal, fd_lock;
 
 void buffer_init() {
   buffer_in = 0;
@@ -397,11 +397,6 @@ int main(int argc, char *argv[]) {
 
   if (sem_init(&fd_lock, 0, 1) != 0) {
     perror("sem_init fd_lock");
-    exit(-1);
-  }
-
-  if (sem_init(&buf_lock, 0, 1) != 0) {
-    perror("sem_init buf_lock");
     exit(-1);
   }
 
